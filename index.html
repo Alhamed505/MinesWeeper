@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#06121a" />
+  <meta name="description" content="Minesweeper: Reactor Protocol (Level 2) — power tiles, corrupted tiles, probability heatmap and reactor objectives." />
+  <title>Minesweeper: Reactor Protocol — Level 2</title>
+
+  <!-- Display + mono pairing; falls back to local monospace offline -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="styles/styles.css" />
+</head>
+<body>
+
+  <!-- Inline copy of assets/icons.svg: Chrome blocks external
+       <use href> targets over file://, so the sprite is embedded.
+       Keep in sync with /assets/icons.svg. -->
+  <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+    <symbol id="icon-timer" viewBox="0 0 24 24">
+      <circle cx="12" cy="13" r="8" fill="none" stroke="currentColor" stroke-width="2"/>
+      <path d="M12 9v4l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <path d="M9 2h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="icon-mine" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="5" fill="currentColor"/>
+      <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="icon-flag" viewBox="0 0 24 24">
+      <path d="M7 21V4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <path d="M7 4l10 4-10 4z" fill="currentColor"/>
+    </symbol>
+    <symbol id="icon-shield" viewBox="0 0 24 24">
+      <path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z"
+            fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+      <path d="M9 11.5l2.2 2.2L15.5 9" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="icon-scanner" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="2.4" fill="currentColor"/>
+      <path d="M12 4a8 8 0 018 8M12 7.2a4.8 4.8 0 014.8 4.8" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <path d="M12 20a8 8 0 01-8-8M12 16.8A4.8 4.8 0 017.2 12" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="icon-defuser" viewBox="0 0 24 24">
+      <path d="M14 3l7 7-8.5 8.5a4.95 4.95 0 11-7-7z" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+      <path d="M13 8l3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="icon-heat" viewBox="0 0 24 24">
+      <path d="M12 3c2 3.5 6 5.5 6 10a6 6 0 11-12 0c0-2 1-3.8 2.2-5.4C9.6 5.8 11 4.6 12 3z"
+            fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+      <path d="M12 11c1 1.4 2.4 2.3 2.4 4.1A2.4 2.4 0 0112 17.5a2.4 2.4 0 01-2.4-2.4c0-1.8 1.4-2.7 2.4-4.1z"
+            fill="currentColor"/>
+    </symbol>
+    <symbol id="icon-restart" viewBox="0 0 24 24">
+      <path d="M4 12a8 8 0 108-8" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round"/>
+      <path d="M12 4H6m6 0v6" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="icon-help" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/>
+      <path d="M9.5 9.5a2.5 2.5 0 113.6 2.2c-.8.4-1.1 1-1.1 1.8v.5" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="12" cy="17.2" r="1.2" fill="currentColor"/>
+    </symbol>
+    <symbol id="icon-corrupt" viewBox="0 0 24 24">
+      <path d="M3 14l4-6 3 4 4-8 3 6 4-2" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M3 20h18" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="3 3"/>
+    </symbol>
+  </svg>
+
+  <div class="reactor-bg" aria-hidden="true"></div>
+  <div class="scanlines" aria-hidden="true"></div>
+
+  <main class="shell">
+    <header class="masthead">
+      <p class="masthead-kicker">// CONTAINMENT GRID 12×12 — SECTOR L2</p>
+      <h1>REACTOR <span>PROTOCOL</span></h1>
+    </header>
+
+    <!-- ====================== HUD ====================== -->
+    <section class="hud" aria-label="Heads-up display">
+      <div class="hud-cluster readouts">
+        <div class="readout" title="Mission timer">
+          <svg class="icon"><use href="#icon-timer"/></svg>
+          <span id="timer" class="readout-value">00:00</span>
+        </div>
+        <div class="readout" title="Mines remaining (mines − flags)">
+          <svg class="icon"><use href="#icon-mine"/></svg>
+          <span id="mines-left" class="readout-value">20</span>
+        </div>
+      </div>
+
+      <div class="hud-cluster inventory" aria-label="Power inventory">
+        <button id="inv-scanner" class="inv-btn" disabled>
+          <svg class="icon"><use href="#icon-scanner"/></svg>
+          <span class="inv-label">Scanner</span>
+          <span class="count">0</span>
+        </button>
+        <button id="inv-shield" class="inv-btn shield" disabled>
+          <svg class="icon"><use href="#icon-shield"/></svg>
+          <span class="inv-label">Shield</span>
+          <span class="count">0</span>
+        </button>
+        <button id="inv-defuser" class="inv-btn" disabled>
+          <svg class="icon"><use href="#icon-defuser"/></svg>
+          <span class="inv-label">Defuser</span>
+          <span class="count">0</span>
+        </button>
+      </div>
+
+      <div class="hud-cluster controls">
+        <button id="btn-heatmap" class="ctl-btn" aria-pressed="false" title="Toggle probability heatmap (H)">
+          <svg class="icon"><use href="#icon-heat"/></svg>
+          <span>Heatmap</span>
+        </button>
+        <button id="btn-restart" class="ctl-btn" title="Restart (R)">
+          <svg class="icon"><use href="#icon-restart"/></svg>
+          <span>Restart</span>
+        </button>
+        <button id="btn-help" class="ctl-btn" title="How to play">
+          <svg class="icon"><use href="#icon-help"/></svg>
+          <span>Help</span>
+        </button>
+      </div>
+    </section>
+
+    <p id="status-line" class="status-line" role="status">Click any tile to initialize the grid</p>
+
+    <!-- ====================== BOARD ====================== -->
+    <section id="board-wrap" class="board-wrap">
+      <canvas id="board" width="480" height="480" aria-label="Minefield grid"></canvas>
+      <div id="prob-tip" class="prob-tip" aria-hidden="true"></div>
+    </section>
+
+    <!-- ====================== OBJECTIVES ====================== -->
+    <section class="objectives-panel" aria-label="Run objectives">
+      <h2>// STABILIZATION OBJECTIVES</h2>
+      <ul id="objectives"></ul>
+    </section>
+
+    <footer class="hints">
+      <span><b>Click</b> reveal</span>
+      <span><b>Right-click / hold</b> flag</span>
+      <span><b>H</b> heatmap</span>
+      <span><b>R</b> restart</span>
+    </footer>
+  </main>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <!-- ====================== HELP MODAL ====================== -->
+  <div id="modal-help" class="modal" role="dialog" aria-modal="true" aria-labelledby="help-title">
+    <div class="modal-card">
+      <button class="modal-x" data-close aria-label="Close">✕</button>
+      <h2 id="help-title">// OPERATOR BRIEFING</h2>
+      <div class="help-grid">
+        <section>
+          <h3>Basics</h3>
+          <p>Classic rules: reveal every safe tile in the 12×12 grid (20 mines).
+             Numbers show adjacent mines. Your first click is always safe.
+             <b>Left-click / tap</b> reveals · <b>right-click / long-press</b> flags.</p>
+        </section>
+        <section>
+          <h3>Power tiles <small>(2 per board — reveal to collect)</small></h3>
+          <p><svg class="icon inline"><use href="#icon-scanner"/></svg> <b>Scanner Pulse</b> — pick a revealed tile; safely reveals the plus-shape around it (range 2). Mines are never revealed.</p>
+          <p><svg class="icon inline"><use href="#icon-shield"/></svg> <b>Shield</b> — passive. Absorbs one mine click; the mine stays buried and the run continues.</p>
+          <p><svg class="icon inline"><use href="#icon-defuser"/></svg> <b>Defuser</b> — probe one hidden tile. A mine is neutralized into a safe tile (numbers recalculate); a dud burns the charge.</p>
+        </section>
+        <section>
+          <h3>Corrupted tiles <small>(4 per board, never mines)</small></h3>
+          <p><svg class="icon inline corrupt"><use href="#icon-corrupt"/></svg> Revealing one is safe but triggers a glitch: visual static, <b>+2s</b> on the clock, or a <b>5s heatmap jam</b>. Worth +25 score each.</p>
+        </section>
+        <section>
+          <h3>Heatmap</h3>
+          <p>Toggle with <b>H</b>. Tiles are tinted by <i>estimated</i> mine risk from neighboring numbers — hover (or long-press on mobile) for the percentage. It's a heuristic, not an oracle.</p>
+        </section>
+        <section>
+          <h3>Winning</h3>
+          <p>Clear the grid <b>and</b> complete both stabilization objectives to fully stabilize the reactor. Score: +10/safe tile, +25/corrupted, +50/objective, time bonus, and combo chains for fast consecutive reveals.</p>
+        </section>
+      </div>
+      <button class="primary-btn" data-close>ENGAGE</button>
+    </div>
+  </div>
+
+  <!-- ====================== RESULTS MODAL ====================== -->
+  <div id="modal-results" class="modal" role="dialog" aria-modal="true" aria-labelledby="result-title">
+    <div class="modal-card">
+      <button class="modal-x" data-close aria-label="Close">✕</button>
+      <h2 id="result-title">RESULTS</h2>
+      <p id="result-message" class="result-message"></p>
+      <ul id="result-objectives" class="result-objectives"></ul>
+      <table class="result-table">
+        <tbody id="result-rows"></tbody>
+        <tfoot>
+          <tr class="total-row">
+            <td>TOTAL</td>
+            <td id="result-total">0</td>
+          </tr>
+        </tfoot>
+      </table>
+      <p class="result-best-line">
+        <span id="result-newbest" class="newbest">★ NEW BEST</span>
+        <span id="result-best">Best: 0</span>
+      </p>
+      <button id="btn-play-again" class="primary-btn">RUN IT AGAIN</button>
+    </div>
+  </div>
+
+  <!-- Plain scripts (dependency order) so the game runs from file://
+       with zero build step — ES modules are CORS-blocked on file://. -->
+  <script src="src/utils.js"></script>
+  <script src="src/storage.js"></script>
+  <script src="src/effects.js"></script>
+  <script src="src/board.js"></script>
+  <script src="src/game.js"></script>
+  <script src="src/renderer.js"></script>
+  <script src="src/ui.js"></script>
+  <script src="src/main.js"></script>
+</body>
+</html>
