@@ -718,6 +718,16 @@ body.lang-ar .toast { font-size: 14px; }
   .board-wrap { padding: 6px; }
 }
 
+/* iOS / installed PWA: clear the status bar (black-translucent puts
+   web content under it) and the home indicator. */
+@media (display-mode: standalone), (display-mode: fullscreen) {
+  .shell {
+    padding-top: calc(14px + env(safe-area-inset-top));
+    padding-left: calc(14px + env(safe-area-inset-left));
+    padding-right: calc(14px + env(safe-area-inset-right));
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .reactor-bg, .newbest, .inv-btn.targeting, .ctl-btn.jammed { animation: none; }
 }

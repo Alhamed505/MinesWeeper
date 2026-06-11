@@ -7,6 +7,16 @@
   <meta name="description" content="MinesWeeper — Reactor Protocol (Level 2): canvas Minesweeper with power tiles, corrupted tiles, probability heatmap, objectives, sound design and English/Arabic UI." />
   <title>MinesWeeper — Reactor Protocol (Level 2)</title>
 
+  <!-- PWA / installable app -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <!-- iOS standalone (Add to Home Screen) -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="MinesWeeper" />
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="assets/icon-192.png" />
+
   <!-- Display + mono pairing, plus Tajawal for the Arabic UI;
        falls back to local fonts offline -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -301,5 +311,18 @@
   <script src="src/renderer.js"></script>
   <script src="src/ui.js"></script>
   <script src="src/main.js"></script>
+
+  <!-- Register the service worker (offline play + installability).
+       Kept inline and independent of the game code so registration
+       still happens even if a game module throws. -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('sw.js').catch(function (err) {
+          console.warn('SW registration failed:', err);
+        });
+      });
+    }
+  </script>
 </body>
 </html>
