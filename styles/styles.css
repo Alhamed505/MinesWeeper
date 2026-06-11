@@ -107,6 +107,22 @@ body {
   text-shadow: 0 0 18px rgba(46, 230, 214, 0.8);
 }
 
+.masthead-sub {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.3em;
+  color: var(--ink-dim);
+  margin-top: 2px;
+}
+
+.operator-line {
+  margin-top: 7px;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  color: var(--amber);
+  text-shadow: 0 0 10px rgba(255, 176, 46, 0.35);
+}
+
 /* -------------------- HUD -------------------- */
 
 .hud {
@@ -205,6 +221,24 @@ body {
 @keyframes armPulse {
   0%, 100% { box-shadow: 0 0 8px rgba(79, 216, 255, 0.35); }
   50%      { box-shadow: 0 0 22px rgba(79, 216, 255, 0.7); }
+}
+
+.ctl-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.ctl-btn .badge {
+  min-width: 17px;
+  padding: 1px 4px;
+  text-align: center;
+  background: rgba(105, 224, 139, 0.12);
+  border: 1px solid rgba(105, 224, 139, 0.4);
+  border-radius: 6px;
+  color: var(--green);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 .ctl-btn[aria-pressed="true"] {
@@ -510,6 +544,81 @@ body.is-targeting #board { cursor: crosshair; }
   box-shadow: 0 0 34px rgba(46, 230, 214, 0.65);
 }
 
+/* -------------------- mission setup -------------------- */
+
+.setup-card { max-width: 420px; }
+
+.setup-label {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: var(--amber);
+  text-transform: uppercase;
+  margin: 15px 0 6px;
+}
+
+.setup-input {
+  width: 100%;
+  padding: 11px 13px;
+  font-family: var(--font-mono);
+  font-size: 16px;
+  color: var(--ink);
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--line-bright);
+  border-radius: 9px;
+  outline: none;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.setup-input:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 14px rgba(46, 230, 214, 0.25);
+}
+
+.segmented {
+  display: flex;
+  gap: 6px;
+}
+
+.segmented button {
+  flex: 1;
+  padding: 9px 6px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.05em;
+  color: var(--ink-dim);
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.segmented button:hover { border-color: var(--line-bright); color: var(--ink); }
+
+.segmented button.active {
+  color: var(--cyan);
+  border-color: var(--cyan);
+  background: rgba(46, 230, 214, 0.08);
+  box-shadow: 0 0 12px rgba(46, 230, 214, 0.25), inset 0 0 10px rgba(46, 230, 214, 0.08);
+}
+
+.setup-preview {
+  margin-top: 9px;
+  font-size: 12.5px;
+  color: var(--ink-dim);
+  text-align: center;
+  letter-spacing: 0.05em;
+}
+
+.primary-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
 /* results */
 
 .result-message { font-size: 13.5px; color: var(--ink-dim); margin-bottom: 12px; }
@@ -563,6 +672,39 @@ body.is-targeting #board { cursor: crosshair; }
   0%, 100% { text-shadow: 0 0 6px rgba(255, 176, 46, 0.4); }
   50%      { text-shadow: 0 0 18px rgba(255, 176, 46, 0.95); }
 }
+
+.best-group { display: flex; gap: 14px; }
+
+/* -------------------- Arabic / RTL -------------------- */
+
+body.lang-ar,
+body.lang-ar button,
+body.lang-ar input {
+  font-family: "Tajawal", var(--font-mono);
+}
+
+body.lang-ar .masthead h1 { font-family: var(--font-display); } /* brand stays latin */
+
+body.lang-ar .masthead-kicker,
+body.lang-ar .masthead-sub,
+body.lang-ar .setup-label,
+body.lang-ar .objectives-panel h2,
+body.lang-ar .modal-card h2,
+body.lang-ar .help-grid h3,
+body.lang-ar .status-line { letter-spacing: 0.02em; }
+
+body.lang-ar .help-grid p { font-size: 14.5px; line-height: 1.75; }
+body.lang-ar #objectives li { font-size: 14.5px; }
+body.lang-ar .toast { font-size: 14px; }
+
+/* numeric readouts keep the mono face + LTR digits in RTL */
+.readout-value, #hint-count, .inv-btn .count, .result-table td:last-child {
+  font-family: var(--font-mono);
+  direction: ltr;
+}
+
+[dir="rtl"] .result-table td:last-child { text-align: left; }
+[dir="rtl"] .modal-x { right: auto; left: 12px; }
 
 /* -------------------- responsive -------------------- */
 

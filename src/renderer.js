@@ -52,7 +52,8 @@
       const board = this.game.board;
       const parent = this.canvas.parentElement;
       const avail = Math.min(parent.clientWidth, 640);
-      this.tile = Math.max(22, Math.floor(avail / board.cols));
+      // cap tile size so tiny grids (3x3) don't become billboards
+      this.tile = Math.min(84, Math.max(22, Math.floor(avail / board.cols)));
       const cssSize = this.tile * board.cols;
       const dpr = window.devicePixelRatio || 1;
       this.canvas.style.width = cssSize + 'px';
@@ -159,6 +160,8 @@
         }
         if (cell.flagged) this.drawFlag(cell, x, y);
         else if (cell.shieldMarked && !game.isOver) this.drawShieldMark(x, y);
+        // hint marker: provably-safe tile, dashed green halo
+        if (cell.hintMark && !cell.flagged && !game.isOver) this.drawHintMark(x, y);
         // on loss, expose every unrevealed mine
         if (game.state === 'lost' && cell.mine) this.drawMine(x, y, false);
         // on loss, cross out wrong flags
@@ -328,6 +331,23 @@
       ctx.lineTo(x + tile - m, y + tile - m);
       ctx.moveTo(x + tile - m, y + m);
       ctx.lineTo(x + m, y + tile - m);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    drawHintMark(x, y) {
+      const ctx = this.ctx;
+      const tile = this.tile;
+      // gentle breathing pulse so it reads as "suggested", not revealed
+      const breathe = 0.55 + 0.35 * Math.sin(this.effects.now / 280);
+      ctx.save();
+      ctx.globalAlpha = breathe;
+      ctx.strokeStyle = PAL.defused;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.shadowColor = PAL.defused;
+      ctx.shadowBlur = 8;
+      this.roundRect(x + 4, y + 4, tile - 8, tile - 8, 5);
       ctx.stroke();
       ctx.restore();
     }

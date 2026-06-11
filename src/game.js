@@ -2,66 +2,93 @@
  * game.js — rules engine and run state.
  *
  * Owns: game status, timer, scoring + combo, power inventory,
- * targeting modes, corruption effects, objectives, end-of-game
- * evaluation. Talks to the outside world only through `hooks`
- * callbacks supplied by main.js (which fan out to effects/ui),
- * so the rules stay testable and rendering-agnostic.
+ * targeting modes, corruption effects, objectives, chord
+ * reveals, the hint system, difficulty/size presets and
+ * end-of-game evaluation. Talks to the outside world only
+ * through `hooks` callbacks supplied by main.js, and emits all
+ * user-facing text as i18n KEYS so the UI layer can render in
+ * the active language.
  * ============================================================ */
 (function (RP) {
   'use strict';
 
   const { createRng, clamp } = RP.utils;
 
-  const CONFIG = {
-    rows: 12,
-    cols: 12,
-    mines: 20,
-    powerCount: 2,
-    corruptedCount: 4,
-    comboWindow: 1.5,     // seconds between reveals to keep the combo
+  /* ----------------------------------------------------------
+   * Mode presets: board size x difficulty.
+   * Mine count = cell count x difficulty density (12x12 medium
+   * lands on the classic 20). Specials scale down with board
+   * area so a 3x3 isn't wall-to-wall pickups.
+   * -------------------------------------------------------- */
+  const SIZES = {
+    '3': { rows: 3, cols: 3 },
+    '6': { rows: 6, cols: 6 },
+    '12': { rows: 12, cols: 12 }
+  };
+
+  const DIFFICULTIES = {
+    easy: { density: 0.10 },
+    medium: { density: 0.14 },
+    hard: { density: 0.18 }
+  };
+
+  /** Resolve a sizeId + diffId pair into concrete board numbers. */
+  function computeMode(sizeId, diffId) {
+    const size = SIZES[sizeId] || SIZES['12'];
+    const diff = DIFFICULTIES[diffId] || DIFFICULTIES.medium;
+    const cells = size.rows * size.cols;
+    const mines = clamp(Math.round(cells * diff.density), 1, cells - 5);
+    const powerCount = cells >= 36 ? 2 : 1;
+    const corruptedCount = cells >= 100 ? 4 : (cells >= 36 ? 2 : 1);
+    return {
+      rows: size.rows, cols: size.cols, mines, powerCount, corruptedCount,
+      modeKey: size.cols + 'x' + size.rows + ':' + (DIFFICULTIES[diffId] ? diffId : 'medium')
+    };
+  }
+
+  const TUNING = {
+    comboWindow: 1.5,     // seconds between reveal actions to keep the combo
     scannerRange: 2,      // plus-shape radius
     heatmapJamSecs: 5,    // corruption: overlay outage duration
-    corruptTimePenalty: 2 // corruption: seconds added
+    corruptTimePenalty: 2,// corruption: seconds added
+    hintsPerRun: 2
   };
 
   const POWER_TYPES = ['scanner', 'shield', 'defuser'];
 
-  const POWER_INFO = {
-    scanner: { name: 'Scanner Pulse', short: 'S' },
-    shield: { name: 'Shield', short: '⛨' },
-    defuser: { name: 'Defuser', short: 'D' }
-  };
-
   /* ----------------------------------------------------------
-   * Objective pool. Each run draws 2. `live` gives the HUD a
-   * progress string; `check(game, finished)` decides completion
-   * at game end (finish-gated objectives require `finished`).
+   * Objective pool. Each run draws 2 feasible ones. `live`
+   * returns a token array the UI translates ([kind, ...args]);
+   * `check(game, finished)` decides completion at game end.
    * -------------------------------------------------------- */
   const OBJECTIVE_POOL = [
     {
       id: 'scanner',
-      label: 'Use Scanner Pulse at least once',
-      needsPower: 'scanner',
-      live: (g) => g.stats.scannerUses > 0 ? 'done' : '0/1',
+      labelKey: 'obj.scanner',
+      feasible: (g) => g.powerTypes.includes('scanner'),
+      live: (g) => g.stats.scannerUses > 0 ? ['done'] : ['frac', 0, 1],
       check: (g) => g.stats.scannerUses > 0
     },
     {
       id: 'corrupted3',
-      label: 'Reveal 3 corrupted tiles',
-      live: (g) => g.stats.corruptedRevealed >= 3 ? 'done'
-        : Math.min(3, g.stats.corruptedRevealed) + '/3',
+      labelKey: 'obj.corrupted3',
+      feasible: (g) => g.mode.corruptedCount >= 3,
+      live: (g) => g.stats.corruptedRevealed >= 3 ? ['done']
+        : ['frac', Math.min(3, g.stats.corruptedRevealed), 3],
       check: (g) => g.stats.corruptedRevealed >= 3
     },
     {
       id: 'noWrongFlags',
-      label: 'Finish with 0 wrong flags',
-      live: () => 'checked at end',
+      labelKey: 'obj.noWrongFlags',
+      feasible: () => true,
+      live: () => ['end'],
       check: (g, finished) => finished && g.stats.wrongFlags === 0
     },
     {
       id: 'under180',
-      label: 'Finish under 180 seconds',
-      live: (g) => g.elapsed < 180 ? Math.floor(180 - g.elapsed) + 's left' : 'expired',
+      labelKey: 'obj.under180',
+      feasible: () => true,
+      live: (g) => g.elapsed < 180 ? ['timeleft', Math.floor(180 - g.elapsed)] : ['expired'],
       check: (g, finished) => finished && g.elapsed < 180
     }
   ];
@@ -69,22 +96,25 @@
   class Game {
     /**
      * @param {object} hooks — presentation callbacks (all optional):
-     *   onRevealBatch(tiles)             newly revealed cells (with depth)
+     *   onRevealBatch(tiles, meta)        newly revealed cells (+ {chain})
      *   onFlag(r, c, flagged)
      *   onExplosion(r, c)
      *   onShieldBlock(r, c)
      *   onPowerCollected(type, r, c)
      *   onPowerUsed(type, info)
      *   onCorruption(effectId, r, c, payload)
-     *   onTargeting(mode)                'scanner' | 'defuser' | null
+     *   onHint(r, c)
+     *   onTargeting(mode)
      *   onGameEnd(result)
-     *   onHud()                          any HUD-visible value changed
-     *   onToast(message, tone)
+     *   onHud()
+     *   onToast(key, tone, params)        i18n key + substitutions
      * @param {string} [seedText] — optional deterministic seed
      */
     constructor(hooks, seedText) {
       this.hooks = hooks || {};
       this.seedText = seedText || null;
+      this.playerName = '';
+      this.settings = RP.storage.getSettings();
       this.restart();
     }
 
@@ -93,28 +123,39 @@
       if (fn) fn(...args);
     }
 
+    /** Change board size / difficulty, then start a fresh run. */
+    applySettings(settings) {
+      this.settings = {
+        sizeId: SIZES[settings.sizeId] ? settings.sizeId : '12',
+        diffId: DIFFICULTIES[settings.diffId] ? settings.diffId : 'medium'
+      };
+      RP.storage.setSettings(this.settings);
+      this.restart();
+    }
+
     restart() {
       // A fixed seed reproduces the same board AND objective draw
       // every restart; otherwise each run gets a fresh random seed.
       this.rng = createRng(this.seedText || undefined);
+      this.mode = computeMode(this.settings.sizeId, this.settings.diffId);
 
-      // Pick which 2 of the 3 power types spawn this run...
+      // Pick which power types spawn this run...
       this.powerTypes = this.rng.shuffle(POWER_TYPES.slice())
-        .slice(0, CONFIG.powerCount);
+        .slice(0, this.mode.powerCount);
 
-      // ...then draw 2 objectives, never drawing an objective whose
-      // power didn't spawn (e.g. "use Scanner" without a scanner).
-      const pool = OBJECTIVE_POOL.filter((o) =>
-        !o.needsPower || this.powerTypes.includes(o.needsPower));
+      // ...then draw 2 objectives that are actually achievable in
+      // this mode (e.g. no scanner objective without a scanner,
+      // no "3 corrupted" on a board that only spawns 1).
+      const pool = OBJECTIVE_POOL.filter((o) => o.feasible(this));
       this.objectives = this.rng.shuffle(pool.slice()).slice(0, 2)
         .map((o) => ({ def: o, done: false }));
 
       this.board = new RP.Board({
-        rows: CONFIG.rows,
-        cols: CONFIG.cols,
-        mines: CONFIG.mines,
+        rows: this.mode.rows,
+        cols: this.mode.cols,
+        mines: this.mode.mines,
         powerTypes: this.powerTypes,
-        corruptedCount: CONFIG.corruptedCount,
+        corruptedCount: this.mode.corruptedCount,
         rng: this.rng
       });
 
@@ -123,13 +164,14 @@
       this.elapsed = 0;
       this.targeting = null;       // 'scanner' | 'defuser' | null
       this.heatmapOn = false;
-      this.heatmapJamUntil = -1;   // game-time when corruption jam ends
+      this.heatmapJamUntil = -1;
+      this.hintsLeft = TUNING.hintsPerRun;
 
       this.inventory = { scanner: 0, shield: 0, defuser: 0 };
 
       this.score = {
-        safeReveals: 0,    // count
-        corrupted: 0,      // count
+        safeReveals: 0,
+        corrupted: 0,
         safePts: 0,
         corruptedPts: 0,
         comboPts: 0,
@@ -155,7 +197,6 @@
 
     get isOver() { return this.state === 'won' || this.state === 'cleared' || this.state === 'lost'; }
 
-    /** mines remaining indicator = current mine count - placed flags */
     minesRemaining() { return this.board.mineCount - this.board.flagCount(); }
 
     totalScore() {
@@ -189,7 +230,15 @@
       if (this.targeting) { this.handleTargetClick(r, c); return; }
 
       const cell = this.board.get(r, c);
-      if (!cell || cell.revealed || cell.flagged) return;
+      if (!cell) return;
+
+      // Chord: clicking a satisfied revealed number pops all of
+      // its remaining unflagged neighbors at once.
+      if (cell.revealed) {
+        if (cell.adj > 0) this.chordReveal(cell);
+        return;
+      }
+      if (cell.flagged) return;
 
       // Lazy generation = first click safety: mines are placed
       // only now, excluding this cell.
@@ -207,13 +256,43 @@
       this.processReveals(tiles, true);
     }
 
+    /**
+     * Smart reveal (chording): if the number of flags around a
+     * revealed numbered tile equals its number, reveal every other
+     * hidden neighbor. Wrong flags make this explosive — exactly
+     * like classic Minesweeper (shield still applies, once per
+     * buried mine encountered).
+     */
+    chordReveal(cell) {
+      if (!this.board.generated) return;
+      let flags = 0;
+      const hidden = [];
+      for (const nb of this.board.neighborsOf(cell.r, cell.c)) {
+        if (nb.flagged) flags++;
+        else if (!nb.revealed) hidden.push(nb);
+      }
+      if (flags !== cell.adj || hidden.length === 0) return;
+
+      const batch = [];
+      for (const nb of hidden) {
+        if (this.isOver) return;
+        if (nb.mine) {
+          if (batch.length) { this.processReveals(batch.splice(0), true); }
+          this.hitMine(nb);
+          if (this.isOver) return; // exploded mid-chord
+        } else if (!nb.revealed) {
+          for (const t of this.board.floodReveal(nb.r, nb.c)) batch.push(t);
+        }
+      }
+      if (batch.length) this.processReveals(batch, true);
+    }
+
     /** Secondary action (right click / long-press). */
     toggleFlag(r, c) {
       if (this.isOver) return;
       if (this.targeting) { this.cancelTargeting(); return; }
       const cell = this.board.get(r, c);
       if (!cell || cell.revealed) return;
-      // Don't allow flag-spam before the board even exists.
       if (!this.board.generated) return;
       const flagged = this.board.toggleFlag(r, c);
       this.emit('onFlag', r, c, flagged);
@@ -229,11 +308,9 @@
         // unrevealed, play continues.
         this.inventory.shield--;
         this.stats.shieldBlocks++;
-        // Mark the tile so the player can see which mine was blocked
-        // (it stays unrevealed and still counts as a live mine).
         cell.shieldMarked = true;
         this.emit('onShieldBlock', cell.r, cell.c);
-        this.emit('onToast', 'Shield absorbed the blast — mine still buried!', 'warn');
+        this.emit('onToast', 'toast.shield', 'warn');
         this.emit('onHud');
         return;
       }
@@ -248,10 +325,6 @@
     /**
      * Shared post-reveal pipeline: scoring, combo, power pickup,
      * corruption triggers, win check.
-     * @param {Array} tiles      newly revealed {r,c,depth}
-     * @param {boolean} isAction true when caused by one player click
-     *                           (combo counts player actions, not
-     *                           every tile inside a flood).
      */
     processReveals(tiles, isAction) {
       if (!tiles.length) return;
@@ -275,8 +348,7 @@
           cell.collected = true;
           this.inventory[cell.power]++;
           this.emit('onPowerCollected', cell.power, cell.r, cell.c);
-          this.emit('onToast',
-            POWER_INFO[cell.power].name + ' acquired', 'good');
+          this.emit('onToast', 'toast.got.' + cell.power, 'good');
         }
       }
 
@@ -287,9 +359,9 @@
 
       // Combo: +5 per consecutive reveal ACTION within the window.
       // Resets on mine hit (see hitMine) or by simply falling
-      // outside the window (covers the 2s-idle rule).
+      // outside the window (covers the idle rule).
       if (isAction) {
-        if (this.elapsed - this.lastRevealAt <= CONFIG.comboWindow) {
+        if (this.elapsed - this.lastRevealAt <= TUNING.comboWindow) {
           this.comboChain++;
           this.score.comboPts += 5;
         } else {
@@ -298,7 +370,7 @@
         this.lastRevealAt = this.elapsed;
       }
 
-      this.emit('onRevealBatch', tiles);
+      this.emit('onRevealBatch', tiles, { chain: this.comboChain });
       this.emit('onHud');
 
       if (this.board.isCleared()) this.finishGame(true);
@@ -307,8 +379,6 @@
     /* ==================== corruption ==================== */
 
     triggerCorruption(cell) {
-      // Random pick from the seeded stream so seeded runs replay
-      // identically given the same click order.
       const roll = this.rng.int(3);
       if (roll === 0) {
         // a) Glitch swap — purely visual jitter on 6 random
@@ -320,37 +390,76 @@
         this.rng.shuffle(hidden);
         const victims = hidden.slice(0, 6).map((t) => ({ r: t.r, c: t.c }));
         this.emit('onCorruption', 'glitch', cell.r, cell.c, victims);
-        this.emit('onToast', 'Corruption: grid signal glitched', 'bad');
+        this.emit('onToast', 'toast.corrGlitch', 'bad');
       } else if (roll === 1) {
         // b) +2 seconds of temporal drag on the run clock.
-        this.elapsed += CONFIG.corruptTimePenalty;
-        this.emit('onCorruption', 'time', cell.r, cell.c, CONFIG.corruptTimePenalty);
-        this.emit('onToast', 'Corruption: +' + CONFIG.corruptTimePenalty + 's temporal drag', 'bad');
+        this.elapsed += TUNING.corruptTimePenalty;
+        this.emit('onCorruption', 'time', cell.r, cell.c, TUNING.corruptTimePenalty);
+        this.emit('onToast', 'toast.corrTime', 'bad', { s: TUNING.corruptTimePenalty });
       } else {
         // c) Heatmap sensors jammed for 5 seconds.
-        this.heatmapJamUntil = this.elapsed + CONFIG.heatmapJamSecs;
-        this.emit('onCorruption', 'jam', cell.r, cell.c, CONFIG.heatmapJamSecs);
-        this.emit('onToast', 'Corruption: heatmap jammed for ' + CONFIG.heatmapJamSecs + 's', 'bad');
+        this.heatmapJamUntil = this.elapsed + TUNING.heatmapJamSecs;
+        this.emit('onCorruption', 'jam', cell.r, cell.c, TUNING.heatmapJamSecs);
+        this.emit('onToast', 'toast.corrJam', 'bad', { s: TUNING.heatmapJamSecs });
       }
+      this.emit('onHud');
+    }
+
+    /* ====================== hints ====================== */
+
+    /**
+     * Hint system (limited uses): finds a PROVABLY safe hidden
+     * tile using only visible information — a revealed number
+     * whose flag count already satisfies it makes all its other
+     * hidden neighbors logically safe. The candidate is verified
+     * against the real board (never marks a mine, even if the
+     * player's flags are wrong) and pulse-marked, not revealed.
+     * A use is only consumed when a tile is actually found.
+     */
+    useHint() {
+      if (this.isOver || this.state !== 'playing' || this.hintsLeft <= 0) return;
+
+      const candidates = [];
+      this.board.eachCell((cell) => {
+        if (!cell.revealed || cell.adj === 0) return;
+        let flags = 0;
+        const hidden = [];
+        for (const nb of this.board.neighborsOf(cell.r, cell.c)) {
+          if (nb.flagged) flags++;
+          else if (!nb.revealed) hidden.push(nb);
+        }
+        if (flags >= cell.adj) {
+          for (const nb of hidden) {
+            if (!nb.mine && !nb.hintMark) candidates.push(nb);
+          }
+        }
+      });
+
+      if (!candidates.length) {
+        this.emit('onToast', 'toast.hintNone', 'warn');
+        return;
+      }
+      const pick = this.rng.pick(candidates);
+      pick.hintMark = true;
+      this.hintsLeft--;
+      this.emit('onHint', pick.r, pick.c);
+      this.emit('onToast', 'toast.hintSafe', 'good');
       this.emit('onHud');
     }
 
     /* ====================== powers ====================== */
 
-    /** HUD inventory button pressed. */
     activatePower(type) {
       if (this.isOver || this.state === 'ready') return;
       if (type === 'shield') {
-        this.emit('onToast', 'Shield is passive — it auto-blocks one mine hit', 'info');
+        this.emit('onToast', 'toast.shieldPassive', 'info');
         return;
       }
       if (!this.inventory[type]) return;
       if (this.targeting === type) { this.cancelTargeting(); return; }
       this.targeting = type;
       this.emit('onTargeting', type);
-      this.emit('onToast', type === 'scanner'
-        ? 'Scanner armed: pick a REVEALED tile as the pulse center'
-        : 'Defuser armed: pick a HIDDEN tile to probe', 'info');
+      this.emit('onToast', type === 'scanner' ? 'status.scanner' : 'status.defuser', 'info');
     }
 
     cancelTargeting() {
@@ -372,7 +481,7 @@
     useScanner(r, c) {
       const center = this.board.get(r, c);
       if (!center || !center.revealed) {
-        this.emit('onToast', 'Pulse center must be a revealed tile', 'warn');
+        this.emit('onToast', 'toast.scanCenter', 'warn');
         return;
       }
       this.inventory.scanner--;
@@ -382,7 +491,7 @@
 
       const revealed = [];
       const shape = [{ r, c }];
-      for (let d = 1; d <= CONFIG.scannerRange; d++) {
+      for (let d = 1; d <= TUNING.scannerRange; d++) {
         shape.push({ r: r - d, c }, { r: r + d, c }, { r, c: c - d }, { r, c: c + d });
       }
       let depth = 0;
@@ -394,9 +503,8 @@
       }
 
       this.emit('onPowerUsed', 'scanner', { center: { r, c }, shape, revealed });
-      this.emit('onToast', revealed.length
-        ? 'Scanner pulse revealed ' + revealed.length + ' tile' + (revealed.length > 1 ? 's' : '')
-        : 'Scanner pulse found nothing new', 'good');
+      if (revealed.length) this.emit('onToast', 'toast.scanHit', 'good', { n: revealed.length });
+      else this.emit('onToast', 'toast.scanMiss', 'info');
       // Scanner reveals are not a manual click — no combo credit.
       this.processReveals(revealed, false);
       this.emit('onHud');
@@ -410,7 +518,7 @@
     useDefuser(r, c) {
       const cell = this.board.get(r, c);
       if (!cell || cell.revealed || cell.flagged) {
-        this.emit('onToast', 'Defuser needs a hidden, unflagged tile', 'warn');
+        this.emit('onToast', 'toast.defuserTarget', 'warn');
         return;
       }
       this.inventory.defuser--;
@@ -421,14 +529,14 @@
         this.board.neutralizeMine(r, c);
         this.stats.defusedMines++;
         this.emit('onPowerUsed', 'defuser', { r, c, hit: true });
-        this.emit('onToast', 'Mine neutralized — numbers recalibrated', 'good');
+        this.emit('onToast', 'toast.defused', 'good');
         // Now safe: reveal it through the normal pipeline (it may
         // flood if its recalculated number is 0).
         const tiles = this.board.floodReveal(r, c);
         this.processReveals(tiles, false);
       } else {
         this.emit('onPowerUsed', 'defuser', { r, c, hit: false });
-        this.emit('onToast', 'No mine detected — defuser expended', 'warn');
+        this.emit('onToast', 'toast.defuserMiss', 'warn');
       }
       this.emit('onHud');
       if (this.board.isCleared()) this.finishGame(true);
@@ -437,7 +545,7 @@
     /* ==================== end of game ==================== */
 
     finishGame(cleared) {
-      if (this.result) return; // already finished
+      if (this.result) return;
       this.cancelTargeting();
 
       this.stats.wrongFlags = this.board.wrongFlagCount();
@@ -458,26 +566,28 @@
       if (cleared) this.state = allObjectives ? 'won' : 'cleared';
 
       const total = this.totalScore();
-      const isBest = (cleared) ? RP.storage.submitScore(total) : false;
+      const records = cleared
+        ? RP.storage.submitRun(this.mode.modeKey, total, this.elapsed)
+        : { newScore: false, newTime: false };
+      const best = RP.storage.getBest(this.mode.modeKey);
 
       this.result = {
         state: this.state,
         cleared,
         allObjectives,
         total,
-        isBest,
-        best: RP.storage.getBestScore(),
+        records,
+        best,
+        modeKey: this.mode.modeKey,
         elapsed: this.elapsed,
         score: Object.assign({}, this.score),
         stats: Object.assign({}, this.stats),
         objectives: this.objectives.map((o) => ({
-          label: o.def.label, done: o.done
+          labelKey: o.def.labelKey, done: o.done
         })),
-        message: !cleared
-          ? 'Reactor breach — containment failed'
-          : (allObjectives
-            ? 'Reactor stabilized — protocol complete'
-            : 'Grid cleared — complete objectives to stabilize reactor')
+        messageKey: !cleared
+          ? 'result.msg.lost'
+          : (allObjectives ? 'result.msg.won' : 'result.msg.cleared')
       };
       this.emit('onHud');
       this.emit('onGameEnd', this.result);
@@ -485,6 +595,6 @@
   }
 
   RP.Game = Game;
-  RP.GameConfig = CONFIG;
-  RP.PowerInfo = POWER_INFO;
+  RP.GameModes = { SIZES, DIFFICULTIES, computeMode, TUNING };
+  RP.GameConfig = TUNING; // renderer uses scannerRange
 })(window.RP = window.RP || {});
