@@ -317,8 +317,27 @@
        still happens even if a game module throws. -->
   <script>
     if ('serviceWorker' in navigator) {
+      // When a new worker takes control, reload once so users always
+      // end up on the latest version (auto-recovers from a stale SW).
+      var swRefreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (swRefreshing) return;
+        swRefreshing = true;
+        window.location.reload();
+      });
       window.addEventListener('load', function () {
-        navigator.serviceWorker.register('sw.js').catch(function (err) {
+        navigator.serviceWorker.register('sw.js').then(function (reg) {
+          // poke an updated-but-waiting worker to activate immediately
+          reg.addEventListener('updatefound', function () {
+            var nw = reg.installing;
+            if (!nw) return;
+            nw.addEventListener('statechange', function () {
+              if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+                nw.postMessage('skipWaiting');
+              }
+            });
+          });
+        }).catch(function (err) {
           console.warn('SW registration failed:', err);
         });
       });
